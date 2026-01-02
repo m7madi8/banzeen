@@ -250,35 +250,53 @@ function closeInputModal() {
 function updateSaveStatus() {
     const lastSaveTime = localStorage.getItem("lastSaveTime");
     const statusElement = document.getElementById("lastSaveTime");
+    const syncStatusElement = document.getElementById("syncStatusText");
     
-    if (!statusElement) return;
-    
-    if (lastSaveTime) {
-        const saveDate = new Date(lastSaveTime);
-        const now = new Date();
-        const diffMs = now - saveDate;
-        const diffMins = Math.floor(diffMs / 60000);
-        const diffSecs = Math.floor((diffMs % 60000) / 1000);
-        
-        if (diffMins < 1) {
-            statusElement.textContent = `✅ آخر حفظ: قبل ${diffSecs} ثانية`;
-            statusElement.style.color = "var(--secondary)";
-        } else if (diffMins < 60) {
-            statusElement.textContent = `✅ آخر حفظ: قبل ${diffMins} دقيقة`;
-            statusElement.style.color = "var(--secondary)";
+    if (statusElement) {
+        if (lastSaveTime) {
+            const saveDate = new Date(lastSaveTime);
+            const now = new Date();
+            const diffMs = now - saveDate;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffSecs = Math.floor((diffMs % 60000) / 1000);
+            
+            if (diffMins < 1) {
+                statusElement.textContent = `✅ آخر حفظ: قبل ${diffSecs} ثانية`;
+                statusElement.style.color = "var(--secondary)";
+            } else if (diffMins < 60) {
+                statusElement.textContent = `✅ آخر حفظ: قبل ${diffMins} دقيقة`;
+                statusElement.style.color = "var(--secondary)";
+            } else {
+                const diffHours = Math.floor(diffMins / 60);
+                statusElement.textContent = `✅ آخر حفظ: قبل ${diffHours} ساعة`;
+                statusElement.style.color = "var(--secondary)";
+            }
         } else {
-            const diffHours = Math.floor(diffMins / 60);
-            statusElement.textContent = `✅ آخر حفظ: قبل ${diffHours} ساعة`;
-            statusElement.style.color = "var(--secondary)";
+            statusElement.textContent = "⚠️ لم يتم الحفظ بعد";
+            statusElement.style.color = "var(--warning)";
         }
-    } else {
-        statusElement.textContent = "⚠️ لم يتم الحفظ بعد";
-        statusElement.style.color = "var(--warning)";
+    }
+    
+    // تحديث حالة المزامنة
+    if (syncStatusElement) {
+        if (window.isSupabaseConfigured && window.isSupabaseConfigured()) {
+            const lastSync = localStorage.getItem("lastSyncTime");
+            if (lastSync) {
+                syncStatusElement.textContent = `☁️ متزامن مع السحابة (Supabase)`;
+                syncStatusElement.style.color = "var(--secondary)";
+            } else {
+                syncStatusElement.textContent = `☁️ جاري المزامنة...`;
+                syncStatusElement.style.color = "var(--primary)";
+            }
+        } else {
+            syncStatusElement.textContent = `📱 العمل في وضع محلي فقط - قم بإعداد Supabase للمزامنة`;
+            syncStatusElement.style.color = "var(--warning)";
+        }
     }
 }
 
-// حفظ البيانات مع نسخ احتياطي
-function saveData() {
+// حفظ البيانات مع نسخ احتياطي ومزامنة Supabase
+async function saveData(skipSync = false) {
     try {
         const dataString = JSON.stringify(clients);
         
@@ -291,7 +309,7 @@ function saveData() {
             return false;
         }
         
-        // حفظ البيانات الرئيسية
+        // حفظ البيانات محلياً
         localStorage.setItem("clients", dataString);
         
         // إنشاء نسخة احتياطية تلقائية (يومية)
@@ -302,6 +320,17 @@ function saveData() {
         // حفظ آخر تاريخ تحديث
         const now = new Date().toISOString();
         localStorage.setItem("lastSaveTime", now);
+        
+        // حفظ في Supabase للمزامنة التلقائية
+        if (!skipSync && window.isSupabaseConfigured && window.isSupabaseConfigured()) {
+            try {
+                await saveToSupabase(clients, now);
+                localStorage.setItem("lastSyncTime", now);
+            } catch (supabaseError) {
+                console.warn("Supabase save failed, data saved locally only:", supabaseError);
+                // نستمر في الحفظ المحلي حتى لو فشل Supabase
+            }
+        }
         
         // تحديث مؤشر الحفظ
         updateSaveStatus();
@@ -318,6 +347,134 @@ function saveData() {
         }
         console.error("Error saving data:", error);
         return false;
+    }
+}
+
+// حفظ البيانات في Supabase
+async function saveToSupabase(data, timestamp) {
+    const supabase = window.getSupabaseClient && window.getSupabaseClient();
+    if (!supabase) {
+        return;
+    }
+    
+    try {
+        const { error } = await supabase
+            .from('clients_data')
+            .upsert({
+                id: 'main',
+                clients: data,
+                last_updated: timestamp,
+                updated_by: localStorage.getItem("username") || "unknown"
+            }, {
+                onConflict: 'id'
+            });
+        
+        if (error) {
+            throw error;
+        }
+        
+        console.log("Data saved to Supabase successfully");
+    } catch (error) {
+        console.error("Error saving to Supabase:", error);
+        throw error;
+    }
+}
+
+// تحميل البيانات من Supabase
+async function loadFromSupabase() {
+    const supabase = window.getSupabaseClient && window.getSupabaseClient();
+    if (!supabase) {
+        return null;
+    }
+    
+    try {
+        const { data, error } = await supabase
+            .from('clients_data')
+            .select('*')
+            .eq('id', 'main')
+            .single();
+        
+        if (error) {
+            if (error.code === 'PGRST116') {
+                // لا توجد بيانات بعد
+                return null;
+            }
+            throw error;
+        }
+        
+        if (data && data.clients && Array.isArray(data.clients)) {
+            console.log("Data loaded from Supabase");
+            return {
+                clients: data.clients,
+                lastUpdated: data.last_updated || null
+            };
+        }
+        
+        return null;
+    } catch (error) {
+        console.error("Error loading from Supabase:", error);
+        return null;
+    }
+}
+
+// الاستماع للتحديثات التلقائية من Supabase
+function setupSupabaseSync() {
+    if (!window.isSupabaseConfigured || !window.isSupabaseConfigured()) {
+        return;
+    }
+    
+    const supabase = window.getSupabaseClient && window.getSupabaseClient();
+    if (!supabase) {
+        return;
+    }
+    
+    try {
+        // الاستماع للتحديثات في الوقت الفعلي
+        const subscription = supabase
+            .channel('clients_data_changes')
+            .on('postgres_changes', 
+                { 
+                    event: '*', 
+                    schema: 'public', 
+                    table: 'clients_data',
+                    filter: 'id=eq.main'
+                }, 
+                (payload) => {
+                    console.log('Change received!', payload);
+                    
+                    if (payload.new && payload.new.clients) {
+                        const remoteLastUpdate = payload.new.last_updated;
+                        const localLastUpdate = localStorage.getItem("lastSaveTime");
+                        
+                        // تحديث فقط إذا كانت البيانات من Supabase أحدث
+                        if (!localLastUpdate || remoteLastUpdate > localLastUpdate) {
+                            // تجنب الحلقة اللا نهائية - تحديث بدون إرسال لـ Supabase
+                            clients = payload.new.clients;
+                            localStorage.setItem("clients", JSON.stringify(clients));
+                            localStorage.setItem("lastSaveTime", remoteLastUpdate);
+                            localStorage.setItem("lastSyncTime", remoteLastUpdate);
+                            
+                            renderClients();
+                            updateSaveStatus();
+                            
+                            // عرض إشعار بالمزامنة
+                            if (document.hasFocus()) {
+                                showSuccess("تم تحديث البيانات من السحابة تلقائياً!");
+                            }
+                        }
+                    }
+                }
+            )
+            .subscribe();
+        
+        console.log("Supabase real-time sync activated");
+        
+        // تنظيف الاشتراك عند إغلاق الصفحة
+        window.addEventListener('beforeunload', () => {
+            subscription.unsubscribe();
+        });
+    } catch (error) {
+        console.error("Error setting up Supabase sync:", error);
     }
 }
 
@@ -494,14 +651,14 @@ function renderClients() {
     // عرض العملاء
     filteredClients.forEach((client, displayIndex) => {
         const actualIndex = clients.findIndex(c => c.id === client.id);
-        const div = document.createElement("div");
-        div.className = "client";
+            const div = document.createElement("div");
+            div.className = "client";
         
         const progressPercent = client.total > 0 
             ? ((client.total - client.remaining) / client.total * 100).toFixed(0)
             : 0;
 
-        div.innerHTML = `
+            div.innerHTML = `
             <div class="info-row">
                 <strong>الاسم:</strong> ${escapeHtml(client.name)}
             </div>
@@ -527,10 +684,10 @@ function renderClients() {
                 <button onclick="editClient(${actualIndex})">✏️ تعديل</button>
                 <button onclick="openModal(${actualIndex})">📄 ملف العميل</button>
                 <button onclick="removeClient(${actualIndex})" class="danger">🗑️ حذف</button>
-            </div>
-        `;
-        container.appendChild(div);
-    });
+                </div>
+            `;
+            container.appendChild(div);
+        });
 
     updateStats();
 }
@@ -879,7 +1036,7 @@ async function exportPDF() {
             const imgHeight = (canvas.height * imgWidth) / canvas.width;
             let heightLeft = imgHeight;
 
-            const { jsPDF } = window.jspdf;
+    const { jsPDF } = window.jspdf;
             const doc = new jsPDF('p', 'mm', 'a4');
             let position = 0;
 
@@ -922,10 +1079,59 @@ async function handleLogout() {
 window.logout = handleLogout;
 
 // تهيئة الصفحة
-function init() {
-    // التحقق من تسجيل الدخول
+async function init() {
+    // التحقق من تسجيل الدخول أولاً وقبل كل شيء
     if (typeof checkAuth === 'function') {
         checkAuth();
+    }
+    
+    // تحقق إضافي: إذا لم يكن مسجل دخول محلياً، لا نكمل التحميل
+    if (typeof isLoggedIn === 'function' && !isLoggedIn()) {
+        // إعادة توجيه فورية لصفحة تسجيل الدخول
+        window.location.href = "login.html";
+        return; // لا نكمل أي شيء آخر
+    }
+    
+    // محاولة تحميل البيانات من Supabase أولاً
+    if (window.isSupabaseConfigured && window.isSupabaseConfigured()) {
+        try {
+            const supabaseData = await loadFromSupabase();
+            if (supabaseData && supabaseData.clients && supabaseData.clients.length > 0) {
+                const localData = localStorage.getItem("clients");
+                const localLastUpdate = localStorage.getItem("lastSaveTime");
+                
+                // إذا كانت بيانات Supabase أحدث، استخدمها
+                if (!localData || !localLastUpdate || supabaseData.lastUpdated > localLastUpdate) {
+                    clients = supabaseData.clients;
+                    localStorage.setItem("clients", JSON.stringify(clients));
+                    localStorage.setItem("lastSaveTime", supabaseData.lastUpdated || new Date().toISOString());
+                    localStorage.setItem("lastSyncTime", supabaseData.lastUpdated || new Date().toISOString());
+                    showSuccess("تم تحميل البيانات من السحابة!");
+                } else {
+                    // إذا كانت البيانات المحلية أحدث، رفعها لـ Supabase
+                    await saveData(true);
+                }
+            }
+            
+            // إعداد المزامنة التلقائية
+            setupSupabaseSync();
+        } catch (error) {
+            console.error("Error loading from Supabase:", error);
+            // المتابعة بالبيانات المحلية
+        }
+    }
+    
+    // تحميل البيانات من localStorage كنسخة احتياطية
+    if (clients.length === 0) {
+        const localData = localStorage.getItem("clients");
+        if (localData) {
+            try {
+                clients = JSON.parse(localData);
+            } catch (e) {
+                console.error("Error parsing local data:", e);
+                clients = [];
+            }
+        }
     }
     
     // تحديث الفهرس عند التحميل وإصلاح البيانات
@@ -944,7 +1150,7 @@ function init() {
     
     // حفظ البيانات بعد الإصلاح
     if (clients.length > 0) {
-        saveData();
+        await saveData(true); // حفظ بدون Firebase لتجنب الحلقة
     }
     
     renderClients();
@@ -1070,7 +1276,7 @@ async function clearAllData() {
         clients = [];
         localStorage.removeItem("clients");
         saveData();
-        renderClients();
+renderClients();
         showSuccess("تم حذف جميع البيانات!");
     }
 }

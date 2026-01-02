@@ -5,6 +5,7 @@ const AUTH_KEY = "user_auth";
 const USER_KEY = "username";
 const PASS_KEY = "password_hash";
 const INIT_KEY = "system_initialized";
+const DEVICE_AUTH_KEY = "device_authenticated"; // مفتاح لتتبع تسجيل الدخول على هذا الجهاز
 
 // بيانات المستخدم الافتراضية
 const DEFAULT_USERNAME = "admin";
@@ -27,6 +28,8 @@ function saveUser(username, password) {
     localStorage.setItem(PASS_KEY, simpleHash(password));
     localStorage.setItem(AUTH_KEY, "true");
     localStorage.setItem(INIT_KEY, "true");
+    // حفظ علامة تسجيل الدخول المحلي على هذا الجهاز
+    localStorage.setItem(DEVICE_AUTH_KEY, "true");
 }
 
 // تهيئة النظام بالمستخدم الافتراضي
@@ -50,9 +53,11 @@ function verifyUser(username, password) {
     return savedUsername === username && savedPasswordHash === simpleHash(password);
 }
 
-// التحقق من تسجيل الدخول
+// التحقق من تسجيل الدخول (يجب أن يكون مسجل دخول محلياً على هذا الجهاز)
 function isLoggedIn() {
-    return localStorage.getItem(AUTH_KEY) === "true";
+    // التحقق من تسجيل الدخول المحلي على هذا الجهاز
+    return localStorage.getItem(AUTH_KEY) === "true" && 
+           localStorage.getItem(DEVICE_AUTH_KEY) === "true";
 }
 
 // تسجيل الدخول
@@ -67,6 +72,8 @@ function login(username, password) {
     // التحقق من البيانات
     if (verifyUser(username, password)) {
         localStorage.setItem(AUTH_KEY, "true");
+        // حفظ علامة تسجيل الدخول المحلي على هذا الجهاز
+        localStorage.setItem(DEVICE_AUTH_KEY, "true");
         return { success: true, message: "تم تسجيل الدخول بنجاح" };
     } else {
         return { success: false, message: "اسم المستخدم أو كلمة المرور غير صحيحة" };
@@ -76,6 +83,7 @@ function login(username, password) {
 // تسجيل الخروج
 function logout() {
     localStorage.removeItem(AUTH_KEY);
+    localStorage.removeItem(DEVICE_AUTH_KEY); // إزالة تسجيل الدخول المحلي أيضاً
     window.location.href = "login.html";
 }
 
@@ -145,23 +153,32 @@ function togglePassword() {
 
 // التحقق من المصادقة قبل تحميل الصفحة
 function checkAuth() {
-    // إذا كنا في صفحة تسجيل الدخول، لا نحتاج للتحقق
-    if (window.location.pathname.includes("login.html")) {
-        // إذا كان المستخدم مسجل دخول بالفعل، إعادة توجيه للصفحة الرئيسية
-        if (isLoggedIn()) {
+    // إذا كنا في صفحة تسجيل الدخول
+    if (window.location.pathname.includes("login.html") || window.location.pathname.endsWith("/") || window.location.pathname === "") {
+        // التحقق من تسجيل الدخول المحلي فقط
+        // حتى لو كان هناك AUTH_KEY، يجب التحقق من DEVICE_AUTH_KEY
+        const deviceAuth = localStorage.getItem(DEVICE_AUTH_KEY);
+        if (deviceAuth === "true" && isLoggedIn()) {
+            // فقط إذا كان مسجل دخول محلياً على هذا الجهاز، اذهب للصفحة الرئيسية
             window.location.href = "index.html";
         }
+        // إذا لم يكن مسجل دخول محلياً، ابق في صفحة تسجيل الدخول
         return;
     }
     
-    // إذا لم يكن المستخدم مسجل دخول، إعادة توجيه لصفحة تسجيل الدخول
+    // إذا كنا في صفحة أخرى (مثل index.html)
+    // يجب التحقق من تسجيل الدخول المحلي على هذا الجهاز
     if (!isLoggedIn()) {
+        // إزالة أي AUTH_KEY قديم (من أجهزة أخرى)
+        localStorage.removeItem(AUTH_KEY);
+        // إجبار تسجيل الدخول
         window.location.href = "login.html";
     }
 }
 
 // تهيئة النظام عند التحميل
-initializeDefaultUser();
+// لا نقوم بتهيئة المستخدم الافتراضي تلقائياً - يجب تسجيل الدخول دائماً
+// initializeDefaultUser(); // تم التعليق لفرض تسجيل الدخول على كل جهاز
 
 // إضافة إمكانية الضغط على Enter لتسجيل الدخول
 if (document.readyState === "loading") {
