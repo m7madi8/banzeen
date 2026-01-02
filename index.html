@@ -35,6 +35,8 @@
         <button onclick="exportData()" class="success" style="min-width: 150px;">📥 تصدير البيانات</button>
         <button onclick="importData()" style="min-width: 150px;">📤 استيراد البيانات</button>
         <button onclick="createBackup()" class="success" style="min-width: 150px;">💾 نسخ احتياطي</button>
+        <button onclick="viewBackups()" style="min-width: 150px;">📋 عرض النسخ</button>
+        <button onclick="printClientsReport()" style="min-width: 150px;">🖨️ طباعة كشف العملاء</button>
         <button onclick="clearAllData()" class="danger" style="min-width: 150px;">🗑️ حذف الكل</button>
     </div>
     <p style="text-align: center; color: var(--text-secondary); font-size: 13px; margin-top: 15px;">
@@ -108,6 +110,18 @@
         <p id="alertMessage"></p>
         <div class="alert-buttons">
             <button id="alertOk" class="confirm-btn confirm-ok">✅ موافق</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal النسخ الاحتياطية -->
+<div id="backupsModal" class="modal hidden">
+    <div class="modal-content" style="max-width: 700px;">
+        <span class="close" onclick="closeBackupsModal()" aria-label="إغلاق">&times;</span>
+        <h2>📋 النسخ الاحتياطية المتاحة</h2>
+        <div id="backupsList" style="margin-top: 20px;"></div>
+        <div style="margin-top: 20px; text-align: center;">
+            <button onclick="closeBackupsModal()">إغلاق</button>
         </div>
     </div>
 </div>

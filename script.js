@@ -312,13 +312,19 @@ async function saveData(skipSync = false) {
         // حفظ البيانات محلياً
         localStorage.setItem("clients", dataString);
         
-        // إنشاء نسخة احتياطية تلقائية (يومية)
-        const today = new Date().toISOString().split('T')[0];
-        const backupKey = `clients_backup_${today}`;
-        localStorage.setItem(backupKey, dataString);
-        
         // حفظ آخر تاريخ تحديث
         const now = new Date().toISOString();
+        
+        // إنشاء نسخة احتياطية تلقائية (يومية) مع معلومات إضافية
+        const today = new Date().toISOString().split('T')[0];
+        const backupKey = `clients_backup_${today}`;
+        const backupData = {
+            clients: clients,
+            timestamp: now,
+            clientCount: clients.length,
+            type: 'auto'
+        };
+        localStorage.setItem(backupKey, JSON.stringify(backupData));
         localStorage.setItem("lastSaveTime", now);
         
         // حفظ في Supabase للمزامنة التلقائية
@@ -546,15 +552,34 @@ function restoreFromBackup() {
         // أحدث نسخة احتياطية
         backupKeys.sort().reverse();
         const latestBackup = backupKeys[0];
-        const backupData = JSON.parse(localStorage.getItem(latestBackup));
+        const backupRaw = localStorage.getItem(latestBackup);
+        let backupData;
         
-        if (validateData(backupData)) {
+        try {
+            backupData = JSON.parse(backupRaw);
+        } catch (e) {
+            customAlert("النسخة الاحتياطية تالفة!", "خطأ");
+            return;
+        }
+        
+        // معالجة الصيغة الجديدة والقديمة
+        let clientsToRestore;
+        if (backupData.clients && Array.isArray(backupData.clients)) {
+            clientsToRestore = backupData.clients;
+        } else if (Array.isArray(backupData)) {
+            clientsToRestore = backupData;
+        } else {
+            customAlert("صيغة النسخة الاحتياطية غير صحيحة!", "خطأ");
+            return;
+        }
+        
+        if (validateData(clientsToRestore)) {
             customConfirm(
-                `تم العثور على نسخة احتياطية بتاريخ: ${latestBackup.replace("clients_backup_", "")}\nهل تريد استعادتها؟`,
+                `تم العثور على نسخة احتياطية بتاريخ: ${latestBackup.replace("clients_backup_", "").replace("clients_manual_backup_", "")}\nعدد العملاء: ${clientsToRestore.length}\nهل تريد استعادتها؟`,
                 "استعادة النسخة الاحتياطية"
             ).then(confirmed => {
                 if (confirmed) {
-                    clients = backupData;
+                    clients = clientsToRestore;
                     saveData();
                     renderClients();
                     showSuccess("تم استعادة النسخة الاحتياطية بنجاح!");
@@ -1243,18 +1268,318 @@ function importData() {
 // إنشاء نسخة احتياطية يدوية
 function createBackup() {
     try {
-        // إنشاء نسخة احتياطية بإسم فريد
-        const backupKey = `clients_manual_backup_${Date.now()}`;
-        localStorage.setItem(backupKey, JSON.stringify(clients));
-        showSuccess("تم إنشاء النسخة الاحتياطية بنجاح!");
-    } catch (error) {
-        if (error.name === 'QuotaExceededError') {
-            showError("مساحة التخزين ممتلئة! يرجى تصدير البيانات وحذف النسخ القديمة.");
-        } else {
-            showError("حدث خطأ في إنشاء النسخة الاحتياطية!");
+        // التحقق من وجود بيانات
+        if (!clients || !Array.isArray(clients)) {
+            showError("لا توجد بيانات للنسخ الاحتياطي!");
+            return;
         }
-        console.error("Backup error:", error);
+        
+        // إنشاء نسخة احتياطية بإسم فريد مع معلومات إضافية
+        const backupKey = `clients_manual_backup_${Date.now()}`;
+        const timestamp = new Date().toISOString();
+        
+        const backupData = {
+            clients: clients,
+            timestamp: timestamp,
+            clientCount: clients.length,
+            type: 'manual'
+        };
+        
+        // التحقق من حجم البيانات
+        const dataString = JSON.stringify(backupData);
+        const dataSize = new Blob([dataString]).size;
+        const maxSize = 5 * 1024 * 1024; // 5 MB
+        
+        if (dataSize > maxSize) {
+            showError("حجم البيانات كبير جداً! يرجى تصدير البيانات بدلاً من النسخ الاحتياطي.");
+            return;
+        }
+        
+        localStorage.setItem(backupKey, dataString);
+        showSuccess(`تم إنشاء النسخة الاحتياطية بنجاح! (${clients.length} عميل)`);
+    } catch (error) {
+        console.error("Backup error details:", error);
+        if (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+            showError("مساحة التخزين ممتلئة! يرجى تصدير البيانات وحذف النسخ القديمة.");
+        } else if (error.message) {
+            showError(`حدث خطأ في إنشاء النسخة الاحتياطية: ${error.message}`);
+        } else {
+            showError("حدث خطأ في إنشاء النسخة الاحتياطية! تحقق من Console للتفاصيل.");
+        }
     }
+}
+
+// عرض قائمة النسخ الاحتياطية
+function viewBackups() {
+    const backupsModal = document.getElementById("backupsModal");
+    const backupsList = document.getElementById("backupsList");
+    
+    // جمع جميع النسخ الاحتياطية
+    const backups = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith("clients_backup_") || key.startsWith("clients_manual_backup_"))) {
+            try {
+                const data = JSON.parse(localStorage.getItem(key));
+                const timestamp = data.timestamp || key.replace("clients_backup_", "").replace("clients_manual_backup_", "");
+                const clientCount = data.clientCount || (Array.isArray(data.clients) ? data.clients.length : (Array.isArray(data) ? data.length : 0));
+                
+                backups.push({
+                    key: key,
+                    timestamp: timestamp,
+                    clientCount: clientCount,
+                    type: key.startsWith("clients_manual_backup_") ? "يدوي" : "تلقائي",
+                    rawData: data
+                });
+            } catch (e) {
+                // قد يكون بيانات قديمة بصيغة مختلفة
+                try {
+                    const oldData = JSON.parse(localStorage.getItem(key));
+                    if (Array.isArray(oldData)) {
+                        backups.push({
+                            key: key,
+                            timestamp: key.replace("clients_backup_", "").replace("clients_manual_backup_", ""),
+                            clientCount: oldData.length,
+                            type: "قديم",
+                            rawData: oldData
+                        });
+                    }
+                } catch (e2) {
+                    console.error("Error parsing backup:", key, e2);
+                }
+            }
+        }
+    }
+    
+    // ترتيب حسب التاريخ (الأحدث أولاً)
+    backups.sort((a, b) => {
+        const dateA = new Date(a.timestamp);
+        const dateB = new Date(b.timestamp);
+        return dateB - dateA;
+    });
+    
+    if (backups.length === 0) {
+        backupsList.innerHTML = '<div class="empty-state">لا توجد نسخ احتياطية متاحة</div>';
+    } else {
+        backupsList.innerHTML = backups.map((backup, index) => {
+            const date = new Date(backup.timestamp);
+            const formattedDate = date.toLocaleDateString("ar-SA", {
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit"
+            });
+            
+            return `
+                <div style="background: var(--bg-dark); padding: 15px; border-radius: 10px; margin: 10px 0; border: 1px solid var(--border);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                        <div>
+                            <strong style="color: var(--primary);">نسخة احتياطية #${index + 1}</strong>
+                            <div style="color: var(--text-secondary); font-size: 14px; margin-top: 5px;">
+                                📅 ${formattedDate}
+                            </div>
+                            <div style="color: var(--text-secondary); font-size: 14px;">
+                                👥 عدد العملاء: ${backup.clientCount} | نوع النسخة: ${backup.type}
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button onclick="restoreSpecificBackup('${backup.key}')" class="success" style="padding: 8px 15px; font-size: 14px;">📥 استعادة</button>
+                            <button onclick="deleteSpecificBackup('${backup.key}')" class="danger" style="padding: 8px 15px; font-size: 14px;">🗑️ حذف</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+    
+    backupsModal.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+}
+
+// إغلاق نافذة النسخ الاحتياطية
+function closeBackupsModal() {
+    const backupsModal = document.getElementById("backupsModal");
+    backupsModal.classList.add("hidden");
+    document.body.style.overflow = "";
+}
+
+// استعادة نسخة احتياطية محددة
+async function restoreSpecificBackup(backupKey) {
+    const confirmed = await customConfirm(
+        "هل تريد استعادة هذه النسخة الاحتياطية؟\nسيتم استبدال البيانات الحالية.",
+        "تأكيد الاستعادة"
+    );
+    
+    if (!confirmed) return;
+    
+    try {
+        const backupData = JSON.parse(localStorage.getItem(backupKey));
+        
+        // معالجة البيانات القديمة والجديدة
+        let clientsToRestore;
+        if (backupData.clients && Array.isArray(backupData.clients)) {
+            clientsToRestore = backupData.clients;
+        } else if (Array.isArray(backupData)) {
+            clientsToRestore = backupData;
+        } else {
+            throw new Error("صيغة النسخة الاحتياطية غير صحيحة");
+        }
+        
+        if (!validateData(clientsToRestore)) {
+            throw new Error("النسخة الاحتياطية تالفة");
+        }
+        
+        clients = clientsToRestore;
+        await saveData(true);
+        renderClients();
+        showSuccess(`تم استعادة النسخة الاحتياطية بنجاح! (${clients.length} عميل)`);
+        closeBackupsModal();
+    } catch (error) {
+        showError("فشل استعادة النسخة الاحتياطية!");
+        console.error("Restore error:", error);
+    }
+}
+
+// حذف نسخة احتياطية محددة
+async function deleteSpecificBackup(backupKey) {
+    const confirmed = await customConfirm(
+        "هل تريد حذف هذه النسخة الاحتياطية؟",
+        "تأكيد الحذف"
+    );
+    
+    if (!confirmed) return;
+    
+    try {
+        localStorage.removeItem(backupKey);
+        showSuccess("تم حذف النسخة الاحتياطية!");
+        // تحديث القائمة
+        viewBackups();
+    } catch (error) {
+        showError("فشل حذف النسخة الاحتياطية!");
+        console.error("Delete backup error:", error);
+    }
+}
+
+// طباعة كشف العملاء
+function printClientsReport() {
+    if (!clients || clients.length === 0) {
+        customAlert("لا توجد عملاء لعرضهم!", "تنبيه");
+        return;
+    }
+    
+    // إنشاء محتوى الطباعة
+    const printContent = document.createElement("div");
+    printContent.id = "print-content";
+    printContent.style.cssText = `
+        width: 210mm;
+        padding: 20mm;
+        background: white;
+        color: black;
+        font-family: 'Arial', 'Tahoma', sans-serif;
+        direction: rtl;
+        text-align: right;
+    `;
+    
+    // العنوان
+    const title = document.createElement("h1");
+    title.textContent = "كشف العملاء";
+    title.style.cssText = "text-align: center; color: #000; font-size: 24px; margin-bottom: 10px;";
+    printContent.appendChild(title);
+    
+    // التاريخ
+    const date = document.createElement("p");
+    date.textContent = `تاريخ الطباعة: ${new Date().toLocaleDateString("ar-SA")}`;
+    date.style.cssText = "text-align: center; color: #666; font-size: 14px; margin-bottom: 20px;";
+    printContent.appendChild(date);
+    
+    // جدول العملاء
+    const table = document.createElement("table");
+    table.style.cssText = "width: 100%; border-collapse: collapse; margin-top: 20px;";
+    table.innerHTML = `
+        <thead>
+            <tr style="background: #38bdf8; color: white;">
+                <th style="padding: 12px; border: 1px solid #ddd; text-align: right;">#</th>
+                <th style="padding: 12px; border: 1px solid #ddd; text-align: right;">الاسم</th>
+                <th style="padding: 12px; border: 1px solid #ddd; text-align: right;">رقم الهاتف</th>
+                <th style="padding: 12px; border: 1px solid #ddd; text-align: left;">المبلغ المتبقي</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${clients.map((client, index) => `
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #ddd;">${index + 1}</td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(client.name)}</td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(client.phone || "لا يوجد")}</td>
+                    <td style="padding: 10px; border: 1px solid #ddd; text-align: left; font-weight: bold; color: ${client.remaining > 0 ? '#ef4444' : '#10b981'};">
+                        ${formatNumber(client.remaining)} ₪
+                    </td>
+                </tr>
+            `).join("")}
+        </tbody>
+        <tfoot>
+            <tr style="background: #f5f5f5; font-weight: bold;">
+                <td colspan="3" style="padding: 12px; border: 1px solid #ddd; text-align: right;">الإجمالي:</td>
+                <td style="padding: 12px; border: 1px solid #ddd; text-align: left; color: #ef4444;">
+                    ${formatNumber(clients.reduce((sum, c) => sum + c.remaining, 0))} ₪
+                </td>
+            </tr>
+        </tfoot>
+    `;
+    printContent.appendChild(table);
+    
+    // الملخص
+    const summary = document.createElement("div");
+    summary.style.cssText = "margin-top: 30px; padding: 15px; background: #f5f5f5; border-radius: 10px;";
+    summary.innerHTML = `
+        <p style="margin: 5px 0;"><strong>عدد العملاء:</strong> ${clients.length}</p>
+        <p style="margin: 5px 0;"><strong>إجمالي المتبقي:</strong> <span style="color: #ef4444;">${formatNumber(clients.reduce((sum, c) => sum + c.remaining, 0))} ₪</span></p>
+    `;
+    printContent.appendChild(summary);
+    
+    // إضافة للصفحة (مخفي)
+    printContent.style.position = "absolute";
+    printContent.style.left = "-9999px";
+    printContent.style.top = "0";
+    document.body.appendChild(printContent);
+    
+    // إعداد الطباعة
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(`
+        <!DOCTYPE html>
+        <html lang="ar" dir="rtl">
+        <head>
+            <meta charset="UTF-8">
+            <title>كشف العملاء</title>
+            <style>
+                body {
+                    margin: 0;
+                    padding: 20mm;
+                    font-family: 'Arial', 'Tahoma', sans-serif;
+                    direction: rtl;
+                }
+                @media print {
+                    body { margin: 0; padding: 0; }
+                    @page { margin: 20mm; }
+                }
+            </style>
+        </head>
+        <body>
+            ${printContent.innerHTML}
+        </body>
+        </html>
+    `);
+    printWindow.document.close();
+    
+    // الانتظار قليلاً ثم الطباعة
+    setTimeout(() => {
+        printWindow.focus();
+        printWindow.print();
+        printWindow.close();
+        document.body.removeChild(printContent);
+    }, 250);
+    
+    showSuccess("تم تحضير الكشف للطباعة!");
 }
 
 // حذف جميع البيانات
