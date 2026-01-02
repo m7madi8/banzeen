@@ -18,10 +18,10 @@
 
 <header>
     <h1>💼 نظام إدارة ديون زبائن الكشك</h1>
-    <h2>📋 قائمة العملاء</h2>
-    <input type="text" id="search" placeholder="🔍 ابحث عن عميل بالاسم أو رقم الهاتف..." autocomplete="off">
-    <div id="clientsList"></div>
 </header>
+
+<h2>📋 قائمة العملاء</h2>
+<input type="text" id="search" placeholder="🔍 ابحث عن عميل بالاسم أو رقم الهاتف..." autocomplete="off">
 
 <section class="stats">
     <div class="box">إجمالي العملاء: <span id="totalClients">0</span></div>
@@ -56,6 +56,8 @@
     <input id="amount" type="number" placeholder="المبلغ الأولي *" required min="0" step="0.01">
     <button id="addBtn">➕ إضافة العميل</button>
 </section>
+
+<div id="clientsList"></div>
 
 <!-- Modal ملف العميل -->
 <div id="modal" class="modal hidden">
