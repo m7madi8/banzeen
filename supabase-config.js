@@ -2,16 +2,16 @@
 // يجب تحديث هذه القيم بمعلومات مشروع Supabase الخاص بك
 
 // إعدادات Supabase - يجب تحديثها
-const SUPABASE_URL = "YOUR_SUPABASE_URL";
-const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
+const SUPABASE_URL = "https://yuxwerlbvwtjnmqftgie.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable__BomvcuctbKDPk85KRbU1A_1lBWj1HJ";
 
 // تهيئة Supabase
 let supabaseClient = null;
 
 // التحقق من إعداد Supabase
 function isSupabaseConfigured() {
-    return SUPABASE_URL !== "YOUR_SUPABASE_URL" && 
-           SUPABASE_ANON_KEY !== "YOUR_SUPABASE_ANON_KEY" &&
+    return SUPABASE_URL !== "https://yuxwerlbvwtjnmqftgie.supabase.co" && 
+           SUPABASE_ANON_KEY !== "sb_publishable__BomvcuctbKDPk85KRbU1A_1lBWj1HJ" &&
            SUPABASE_URL.length > 0 &&
            SUPABASE_ANON_KEY.length > 0;
 }
