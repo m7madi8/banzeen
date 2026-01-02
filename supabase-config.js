@@ -10,8 +10,8 @@ let supabaseClient = null;
 
 // التحقق من إعداد Supabase
 function isSupabaseConfigured() {
-    return SUPABASE_URL !== "https://yuxwerlbvwtjnmqftgie.supabase.co" && 
-           SUPABASE_ANON_KEY !== "sb_publishable__BomvcuctbKDPk85KRbU1A_1lBWj1HJ" &&
+    return SUPABASE_URL !== "YOUR_SUPABASE_URL" && 
+           SUPABASE_ANON_KEY !== "YOUR_SUPABASE_ANON_KEY" &&
            SUPABASE_URL.length > 0 &&
            SUPABASE_ANON_KEY.length > 0;
 }
