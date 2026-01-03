@@ -640,6 +640,9 @@ async function addClientConfirmed(name, phone, amount) {
         }]
     });
 
+    // إزالة علامة الحذف الكامل عند إضافة عميل جديد
+    localStorage.removeItem("dataClearedAt");
+
     // مسح الحقول
     nameInput.value = "";
     phoneInput.value = "";
@@ -1120,22 +1123,51 @@ async function init() {
     // محاولة تحميل البيانات من Supabase أولاً
     if (window.isSupabaseConfigured && window.isSupabaseConfigured()) {
         try {
+            // التحقق من وجود علامة حذف حديثة (خلال آخر 10 دقائق)
+            const dataClearedAt = localStorage.getItem("dataClearedAt");
+            const now = new Date();
+            const clearedTime = dataClearedAt ? new Date(dataClearedAt) : null;
+            const timeSinceClear = clearedTime ? (now - clearedTime) / (1000 * 60) : null; // بالدقائق
+            
+            // إذا تم الحذف حديثاً (خلال آخر 10 دقائق)، لا نحمّل من Supabase
+            const wasRecentlyCleared = clearedTime && timeSinceClear < 10;
+            
+            const localData = localStorage.getItem("clients");
+            const localLastUpdate = localStorage.getItem("lastSaveTime");
+            const localClients = localData ? JSON.parse(localData) : [];
+            
             const supabaseData = await loadFromSupabase();
-            if (supabaseData && supabaseData.clients && supabaseData.clients.length > 0) {
-                const localData = localStorage.getItem("clients");
-                const localLastUpdate = localStorage.getItem("lastSaveTime");
-                
-                // إذا كانت بيانات Supabase أحدث، استخدمها
+            
+            // إذا كانت البيانات المحلية فارغة وكان هناك حذف حديث، لا تحمّل من Supabase
+            if (wasRecentlyCleared && (!localData || localClients.length === 0)) {
+                console.log("Data was recently cleared, skipping Supabase load");
+                // إزالة علامة الحذف بعد مرور الوقت
+                if (timeSinceClear >= 10) {
+                    localStorage.removeItem("dataClearedAt");
+                }
+            } else if (supabaseData && supabaseData.clients && supabaseData.clients.length > 0) {
+                // إذا كانت بيانات Supabase أحدث من البيانات المحلية، استخدمها
                 if (!localData || !localLastUpdate || supabaseData.lastUpdated > localLastUpdate) {
-                    clients = supabaseData.clients;
-                    localStorage.setItem("clients", JSON.stringify(clients));
-                    localStorage.setItem("lastSaveTime", supabaseData.lastUpdated || new Date().toISOString());
-                    localStorage.setItem("lastSyncTime", supabaseData.lastUpdated || new Date().toISOString());
-                    showSuccess("تم تحميل البيانات من السحابة!");
+                    // إذا كانت البيانات المحلية فارغة حديثاً (أقل من دقيقة)، لا نستبدلها
+                    const localIsEmpty = !localData || localClients.length === 0;
+                    const localIsRecent = localLastUpdate && (new Date() - new Date(localLastUpdate)) / 1000 < 60;
+                    
+                    if (!(localIsEmpty && localIsRecent)) {
+                        clients = supabaseData.clients;
+                        localStorage.setItem("clients", JSON.stringify(clients));
+                        localStorage.setItem("lastSaveTime", supabaseData.lastUpdated || new Date().toISOString());
+                        localStorage.setItem("lastSyncTime", supabaseData.lastUpdated || new Date().toISOString());
+                        showSuccess("تم تحميل البيانات من السحابة!");
+                    }
                 } else {
                     // إذا كانت البيانات المحلية أحدث، رفعها لـ Supabase
-                    await saveData(true);
+                    if (clients.length > 0 || !localData) {
+                        await saveData(true);
+                    }
                 }
+            } else if (localData && localClients.length > 0) {
+                // إذا كانت البيانات المحلية موجودة ولكن Supabase فارغ، رفعها
+                await saveData(true);
             }
             
             // إعداد المزامنة التلقائية
@@ -1250,6 +1282,8 @@ function importData() {
                 ).then(confirmed => {
                     if (confirmed) {
                         clients = dataToImport;
+                        // إزالة علامة الحذف الكامل عند استيراد البيانات
+                        localStorage.removeItem("dataClearedAt");
                         saveData();
                         renderClients();
                         showSuccess(`تم استيراد ${dataToImport.length} عميل بنجاح!`);
@@ -1431,6 +1465,8 @@ async function restoreSpecificBackup(backupKey) {
         }
         
         clients = clientsToRestore;
+        // إزالة علامة الحذف الكامل عند استعادة النسخة الاحتياطية
+        localStorage.removeItem("dataClearedAt");
         await saveData(true);
         renderClients();
         showSuccess(`تم استعادة النسخة الاحتياطية بنجاح! (${clients.length} عميل)`);
@@ -1599,10 +1635,29 @@ async function clearAllData() {
     
     if (doubleConfirmed) {
         clients = [];
+        
+        // حذف البيانات المحلية
         localStorage.removeItem("clients");
-        saveData();
-renderClients();
-        showSuccess("تم حذف جميع البيانات!");
+        
+        // وضع علامة على الحذف الكامل مع timestamp
+        const deletionTime = new Date().toISOString();
+        localStorage.setItem("dataClearedAt", deletionTime);
+        localStorage.setItem("lastSaveTime", deletionTime);
+        
+        // حذف البيانات من Supabase أيضاً وحفظ مصفوفة فارغة
+        if (window.isSupabaseConfigured && window.isSupabaseConfigured()) {
+            try {
+                await saveToSupabase([], deletionTime);
+                localStorage.setItem("lastSyncTime", deletionTime);
+                console.log("Data cleared from Supabase");
+            } catch (error) {
+                console.warn("Failed to clear data from Supabase:", error);
+                // نستمر حتى لو فشل Supabase
+            }
+        }
+        
+        renderClients();
+        showSuccess("تم حذف جميع البيانات بشكل نهائي!");
     }
 }
 
