@@ -934,12 +934,32 @@ function closeModal() {
 // تصدير PDF
 async function exportPDF() {
     if (currentIndex === null || currentIndex < 0 || currentIndex >= clients.length) {
-        showError("حدث خطأ في تصدير الملف!");
+        customAlert("يرجى اختيار عميل أولاً لعرض كشف حسابه", "تنبيه");
         return;
     }
 
     try {
         const client = clients[currentIndex];
+        
+        // التحقق من وجود المكتبات المطلوبة
+        if (typeof html2canvas === 'undefined') {
+            throw new Error("مكتبة html2canvas غير متاحة. يرجى تحديث الصفحة.");
+        }
+        
+        // التحقق من jsPDF بطرق مختلفة
+        let jsPDFAvailable = false;
+        if (window.jspdf && window.jspdf.jsPDF) {
+            jsPDFAvailable = true;
+        } else if (window.jsPDF) {
+            jsPDFAvailable = true;
+        }
+        
+        if (!jsPDFAvailable) {
+            throw new Error("مكتبة jsPDF غير متاحة. يرجى تحديث الصفحة.");
+        }
+        
+        // إظهار رسالة تحميل
+        showSuccess("جاري إنشاء الملف... يرجى الانتظار...");
         
         // إنشاء محتوى HTML للتصدير
         const pdfContent = document.createElement("div");
@@ -1051,11 +1071,16 @@ async function exportPDF() {
 
         // تحويل إلى صورة ثم PDF
         if (typeof html2canvas !== 'undefined') {
+            // إعطاء الوقت للعناصر للظهور
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
             const canvas = await html2canvas(pdfContent, {
                 scale: 2,
                 useCORS: true,
                 logging: false,
-                backgroundColor: '#ffffff'
+                backgroundColor: '#ffffff',
+                allowTaint: true,
+                removeContainer: false
             });
 
             const imgData = canvas.toDataURL('image/png');
@@ -1064,7 +1089,16 @@ async function exportPDF() {
             const imgHeight = (canvas.height * imgWidth) / canvas.width;
             let heightLeft = imgHeight;
 
-    const { jsPDF } = window.jspdf;
+            // الوصول إلى jsPDF بشكل صحيح
+            let jsPDF;
+            if (window.jspdf && window.jspdf.jsPDF) {
+                jsPDF = window.jspdf.jsPDF;
+            } else if (window.jsPDF) {
+                jsPDF = window.jsPDF;
+            } else {
+                throw new Error("مكتبة jsPDF غير متاحة");
+            }
+            
             const doc = new jsPDF('p', 'mm', 'a4');
             let position = 0;
 
@@ -1078,32 +1112,65 @@ async function exportPDF() {
                 heightLeft -= pageHeight;
             }
 
-            // فتح PDF في نافذة جديدة بدلاً من تحميله
+            // إنشاء PDF blob وفتحه مباشرة
             const pdfBlob = doc.output('blob');
             const pdfUrl = URL.createObjectURL(pdfBlob);
-            const newWindow = window.open(pdfUrl, '_blank');
             
-            // تنظيف بعد فتح النافذة
-            if (newWindow) {
+            console.log("PDF created successfully, size:", pdfBlob.size, "bytes");
+            
+            // استخدام طريقة موثوقة لفتح PDF
+            // إنشاء رابط وفتحه في نافذة جديدة
+            const link = document.createElement('a');
+            link.href = pdfUrl;
+            link.target = '_blank';
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            
+            // محاولة فتح PDF في نافذة جديدة
+            try {
+                link.click();
+                showSuccess("تم فتح الملف بنجاح!");
+                
+                // تنظيف بعد 3 ثوانٍ
                 setTimeout(() => {
+                    document.body.removeChild(link);
                     URL.revokeObjectURL(pdfUrl);
-                }, 100);
-            } else {
-                // إذا فشل فتح النافذة (بسبب حظر منع النوافذ المنبثقة)، قم بتحميل الملف
-                doc.save(`${client.name}_كشف_حساب_${Date.now()}.pdf`);
+                }, 3000);
+            } catch (error) {
+                console.error("Error opening PDF:", error);
+                // إذا فشل، حاول فتحه مباشرة في نافذة جديدة
+                const newWindow = window.open(pdfUrl, '_blank');
+                if (newWindow) {
+                    showSuccess("تم فتح الملف بنجاح!");
+                    setTimeout(() => {
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(pdfUrl);
+                    }, 3000);
+                } else {
+                    // إذا فشل كل شيء، قم بتحميل الملف
+                    const fileName = `${client.name.replace(/[^a-zA-Z0-9\u0600-\u06FF]/g, '_')}_كشف_حساب_${Date.now()}.pdf`;
+                    link.download = fileName;
+                    link.click();
+                    showSuccess("تم تحميل الملف بنجاح!");
+                    setTimeout(() => {
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(pdfUrl);
+                    }, 1000);
+                }
             }
             
             document.body.removeChild(pdfContent);
-            showSuccess("تم فتح الملف بنجاح!");
         } else {
             throw new Error("html2canvas غير متاح");
         }
     } catch (error) {
-        showError("حدث خطأ في تصدير الملف!");
         console.error("PDF Export Error:", error);
+        customAlert(`حدث خطأ في تصدير الملف!\n${error.message || error}`, "خطأ");
         // إزالة العنصر إذا كان موجوداً
         const pdfContent = document.getElementById("pdf-content");
-        if (pdfContent) document.body.removeChild(pdfContent);
+        if (pdfContent && pdfContent.parentNode) {
+            document.body.removeChild(pdfContent);
+        }
     }
 }
 
