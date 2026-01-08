@@ -1078,9 +1078,23 @@ async function exportPDF() {
                 heightLeft -= pageHeight;
             }
 
-            doc.save(`${client.name}_كشف_حساب_${Date.now()}.pdf`);
+            // فتح PDF في نافذة جديدة بدلاً من تحميله
+            const pdfBlob = doc.output('blob');
+            const pdfUrl = URL.createObjectURL(pdfBlob);
+            const newWindow = window.open(pdfUrl, '_blank');
+            
+            // تنظيف بعد فتح النافذة
+            if (newWindow) {
+                setTimeout(() => {
+                    URL.revokeObjectURL(pdfUrl);
+                }, 100);
+            } else {
+                // إذا فشل فتح النافذة (بسبب حظر منع النوافذ المنبثقة)، قم بتحميل الملف
+                doc.save(`${client.name}_كشف_حساب_${Date.now()}.pdf`);
+            }
+            
             document.body.removeChild(pdfContent);
-            showSuccess("تم تصدير الملف بنجاح!");
+            showSuccess("تم فتح الملف بنجاح!");
         } else {
             throw new Error("html2canvas غير متاح");
         }
