@@ -360,9 +360,11 @@ async function saveData(skipSync = false) {
 async function saveToFirebase(data, timestamp) {
     const db = window.getFirebaseDb && window.getFirebaseDb();
     if (!db) {
+        console.warn("Firebase DB not available - skipping cloud save");
         return;
     }
     
+    isSavingToFirebase = true;
     try {
         await db.collection('clients').doc('main').set({
             clients: data,
@@ -374,6 +376,8 @@ async function saveToFirebase(data, timestamp) {
     } catch (error) {
         console.error("Error saving to Firebase:", error);
         throw error;
+    } finally {
+        isSavingToFirebase = false;
     }
 }
 
@@ -417,6 +421,8 @@ async function loadFromFirebase() {
 
 // إلغاء الاشتراك في مستمع Firebase (لمنع المستمعين المكررين)
 let firebaseUnsubscribe = null;
+// علم لتجنّب استبدال البيانات أثناء حفظنا (race condition)
+let isSavingToFirebase = false;
 
 // الاستماع للتحديثات التلقائية من Firebase (Real-time)
 function setupFirebaseSync() {
@@ -439,6 +445,8 @@ function setupFirebaseSync() {
         firebaseUnsubscribe = db.collection('clients').doc('main')
             .onSnapshot((docSnapshot) => {
                 if (!docSnapshot.exists) return;
+                // تجاهل التحديث أثناء حفظنا لتفادي استبدال بياناتنا بقديمة
+                if (isSavingToFirebase) return;
                 
                 const data = docSnapshot.data();
                 if (!data || !data.clients) return;
@@ -600,12 +608,11 @@ function restoreFromBackup() {
 }
 
 // إضافة عميل جديد
-function addClient() {
+async function addClient() {
     const name = nameInput.value.trim();
     const phone = phoneInput.value.trim();
     const amount = parseFloat(amountInput.value);
 
-    // التحقق من البيانات
     if (!name) {
         showError("الرجاء إدخال اسم العميل");
         nameInput.focus();
@@ -618,47 +625,48 @@ function addClient() {
         return;
     }
 
-    // التحقق من عدم وجود عميل بنفس الاسم
     if (clients.some(c => c.name.toLowerCase() === name.toLowerCase())) {
-        customConfirm(`يوجد عميل باسم "${name}" بالفعل. هل تريد الإضافة رغم ذلك؟`, "تحذير").then(result => {
-            if (!result) return;
-            addClientConfirmed(name, phone, amount);
-        });
-        return;
+        const result = await customConfirm(`يوجد عميل باسم "${name}" بالفعل. هل تريد الإضافة رغم ذلك؟`, "تحذير");
+        if (!result) return;
     }
     
-    addClientConfirmed(name, phone, amount);
+    await addClientConfirmed(name, phone, amount);
 }
 
 // إضافة عميل بعد التأكيد
 async function addClientConfirmed(name, phone, amount) {
+    try {
+        clients.push({
+            id: Date.now(),
+            name,
+            phone: phone || "لا يوجد",
+            total: amount,
+            remaining: amount,
+            history: [{
+                type: "دين أولي",
+                amount: amount,
+                date: new Date().toISOString()
+            }]
+        });
 
-    // إضافة العميل
-    clients.push({
-        id: Date.now(),
-        name,
-        phone: phone || "لا يوجد",
-        total: amount,
-        remaining: amount,
-        history: [{
-            type: "دين أولي",
-            amount: amount,
-            date: new Date().toISOString()
-        }]
-    });
+        localStorage.removeItem("dataClearedAt");
 
-    // إزالة علامة الحذف الكامل عند إضافة عميل جديد
-    localStorage.removeItem("dataClearedAt");
+        nameInput.value = "";
+        phoneInput.value = "";
+        amountInput.value = "";
 
-    // مسح الحقول
-    nameInput.value = "";
-    phoneInput.value = "";
-    amountInput.value = "";
-
-    await saveData();
-    renderClients();
-    showSuccess("تم إضافة العميل بنجاح!");
-    nameInput.focus();
+        const saved = await saveData();
+        if (!saved) {
+            showError("فشل حفظ البيانات!");
+            return;
+        }
+        renderClients();
+        showSuccess("تم إضافة العميل بنجاح!");
+        nameInput.focus();
+    } catch (err) {
+        console.error("addClientConfirmed error:", err);
+        showError("حدث خطأ أثناء الإضافة: " + (err.message || err));
+    }
 }
 
 // عرض قائمة العملاء
@@ -761,21 +769,25 @@ async function payFull(i) {
     }
 
     const confirmed = await customConfirm(`هل تريد سداد المبلغ الكامل الباقي: ${formatNumber(client.remaining)} ₪؟`, "تأكيد السداد");
-    if (!confirmed) {
-        return;
+    if (!confirmed) return;
+
+    try {
+        const amount = client.remaining;
+        client.remaining = 0;
+        client.history.push({
+            type: "سداد كامل",
+            amount: amount,
+            date: new Date().toISOString()
+        });
+
+        const saved = await saveData();
+        if (!saved) { client.remaining = amount; client.history.pop(); showError("فشل الحفظ!"); return; }
+        renderClients();
+        showSuccess(`تم سداد المبلغ الكامل: ${formatNumber(amount)} ₪`);
+    } catch (err) {
+        console.error("payFull error:", err);
+        showError("حدث خطأ: " + (err.message || err));
     }
-
-    const amount = client.remaining;
-    client.remaining = 0;
-    client.history.push({
-        type: "سداد كامل",
-        amount: amount,
-        date: new Date().toISOString()
-    });
-
-    await saveData();
-    renderClients();
-    showSuccess(`تم سداد المبلغ الكامل: ${formatNumber(amount)} ₪`);
 }
 
 // دفع تقسيط
@@ -802,18 +814,30 @@ async function installment(i) {
         return;
     }
 
-    client.remaining -= amount;
-    if (client.remaining < 0) client.remaining = 0;
+    try {
+        client.remaining -= amount;
+        if (client.remaining < 0) client.remaining = 0;
+        client.history.push({
+            type: "دفعة تقسيط",
+            amount: amount,
+            date: new Date().toISOString()
+        });
 
-    client.history.push({
-        type: "دفعة تقسيط",
-        amount: amount,
-        date: new Date().toISOString()
-    });
-
-    await saveData();
-    renderClients();
-    showSuccess(`تم تسجيل دفعة: ${formatNumber(amount)} ₪`);
+        const saved = await saveData();
+        if (!saved) {
+            client.remaining += amount;
+            client.history.pop();
+            showError("فشل الحفظ!");
+            return;
+        }
+        renderClients();
+        showSuccess(`تم تسجيل دفعة: ${formatNumber(amount)} ₪`);
+    } catch (err) {
+        client.remaining += amount;
+        client.history.pop();
+        console.error("installment error:", err);
+        showError("حدث خطأ: " + (err.message || err));
+    }
 }
 
 // إضافة دين إضافي
@@ -829,17 +853,32 @@ async function addMore(i) {
         return;
     }
 
-    clients[i].total += amount;
-    clients[i].remaining += amount;
-    clients[i].history.push({
-        type: "دين إضافي",
-        amount: amount,
-        date: new Date().toISOString()
-    });
+    try {
+        clients[i].total += amount;
+        clients[i].remaining += amount;
+        clients[i].history.push({
+            type: "دين إضافي",
+            amount: amount,
+            date: new Date().toISOString()
+        });
 
-    await saveData();
-    renderClients();
-    showSuccess(`تم إضافة دين إضافي: ${formatNumber(amount)} ₪`);
+        const saved = await saveData();
+        if (!saved) {
+            clients[i].total -= amount;
+            clients[i].remaining -= amount;
+            clients[i].history.pop();
+            showError("فشل الحفظ!");
+            return;
+        }
+        renderClients();
+        showSuccess(`تم إضافة دين إضافي: ${formatNumber(amount)} ₪`);
+    } catch (err) {
+        clients[i].total -= amount;
+        clients[i].remaining -= amount;
+        clients[i].history.pop();
+        console.error("addMore error:", err);
+        showError("حدث خطأ: " + (err.message || err));
+    }
 }
 
 // تعديل العميل
@@ -860,9 +899,15 @@ async function editClient(i) {
         client.phone = newPhone.trim() || "لا يوجد";
     }
 
-    await saveData();
-    renderClients();
-    showSuccess("تم تحديث بيانات العميل!");
+    try {
+        const saved = await saveData();
+        if (!saved) { showError("فشل الحفظ!"); return; }
+        renderClients();
+        showSuccess("تم تحديث بيانات العميل!");
+    } catch (err) {
+        console.error("editClient error:", err);
+        showError("حدث خطأ: " + (err.message || err));
+    }
 }
 
 // حذف العميل
@@ -871,14 +916,23 @@ async function removeClient(i) {
 
     const client = clients[i];
     const confirmed = await customConfirm(`هل أنت متأكد من حذف العميل "${client.name}"؟\nسيتم حذف جميع البيانات المرتبطة به بشكل نهائي.`, "تأكيد الحذف");
-    if (!confirmed) {
-        return;
-    }
+    if (!confirmed) return;
 
-    clients.splice(i, 1);
-    await saveData();
-    renderClients();
-    showSuccess("تم حذف العميل!");
+    try {
+        clients.splice(i, 1);
+        const saved = await saveData();
+        if (!saved) {
+            showError("فشل حفظ الحذف!");
+            clients.splice(i, 0, client); // تراجع
+            return;
+        }
+        renderClients();
+        showSuccess("تم حذف العميل!");
+    } catch (err) {
+        console.error("removeClient error:", err);
+        clients.splice(i, 0, client);
+        showError("حدث خطأ أثناء الحذف: " + (err.message || err));
+    }
 }
 
 // فتح Modal ملف العميل
