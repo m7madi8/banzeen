@@ -24,18 +24,20 @@
 
 ## الخطوة 4: تحديث ملف firebase-config.js
 
-افتح ملف `firebase-config.js` واستبدل القيم التالية:
+افتح ملف `firebase-config.js` واستبدل القيم في `firebaseConfig`:
 
 ```javascript
 const firebaseConfig = {
     apiKey: "ضع_API_KEY_هنا",
-    authDomain: "ضع_AUTH_DOMAIN_هنا",
+    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
     projectId: "ضع_PROJECT_ID_هنا",
-    storageBucket: "ضع_STORAGE_BUCKET_هنا",
+    storageBucket: "YOUR_PROJECT_ID.appspot.com",
     messagingSenderId: "ضع_MESSAGING_SENDER_ID_هنا",
     appId: "ضع_APP_ID_هنا"
 };
 ```
+
+> استبدل `YOUR_PROJECT_ID` بـ **Project ID** من إعدادات المشروع.
 
 ## الخطوة 5: إعداد قواعد الأمان (Security Rules)
 

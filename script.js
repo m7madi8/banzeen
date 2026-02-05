@@ -279,23 +279,23 @@ function updateSaveStatus() {
     
     // تحديث حالة المزامنة
     if (syncStatusElement) {
-        if (window.isSupabaseConfigured && window.isSupabaseConfigured()) {
+        if (window.isFirebaseConfigured && window.isFirebaseConfigured()) {
             const lastSync = localStorage.getItem("lastSyncTime");
             if (lastSync) {
-                syncStatusElement.textContent = `☁️ متزامن مع السحابة (Supabase)`;
+                syncStatusElement.textContent = `☁️ متزامن مع السحابة (Firebase)`;
                 syncStatusElement.style.color = "var(--secondary)";
             } else {
                 syncStatusElement.textContent = `☁️ جاري المزامنة...`;
                 syncStatusElement.style.color = "var(--primary)";
             }
         } else {
-            syncStatusElement.textContent = `📱 العمل في وضع محلي فقط - قم بإعداد Supabase للمزامنة`;
+            syncStatusElement.textContent = `📱 العمل في وضع محلي فقط - قم بإعداد Firebase للمزامنة`;
             syncStatusElement.style.color = "var(--warning)";
         }
     }
 }
 
-// حفظ البيانات مع نسخ احتياطي ومزامنة Supabase
+// حفظ البيانات مع نسخ احتياطي ومزامنة Firebase
 async function saveData(skipSync = false) {
     try {
         const dataString = JSON.stringify(clients);
@@ -327,14 +327,14 @@ async function saveData(skipSync = false) {
         localStorage.setItem(backupKey, JSON.stringify(backupData));
         localStorage.setItem("lastSaveTime", now);
         
-        // حفظ في Supabase للمزامنة التلقائية
-        if (!skipSync && window.isSupabaseConfigured && window.isSupabaseConfigured()) {
+        // حفظ في Firebase للمزامنة التلقائية
+        if (!skipSync && window.isFirebaseConfigured && window.isFirebaseConfigured()) {
             try {
-                await saveToSupabase(clients, now);
+                await saveToFirebase(clients, now);
                 localStorage.setItem("lastSyncTime", now);
-            } catch (supabaseError) {
-                console.warn("Supabase save failed, data saved locally only:", supabaseError);
-                // نستمر في الحفظ المحلي حتى لو فشل Supabase
+            } catch (firebaseError) {
+                console.warn("Firebase save failed, data saved locally only:", firebaseError);
+                // نستمر في الحفظ المحلي حتى لو فشل Firebase
             }
         }
         
@@ -356,60 +356,45 @@ async function saveData(skipSync = false) {
     }
 }
 
-// حفظ البيانات في Supabase
-async function saveToSupabase(data, timestamp) {
-    const supabase = window.getSupabaseClient && window.getSupabaseClient();
-    if (!supabase) {
+// حفظ البيانات في Firebase
+async function saveToFirebase(data, timestamp) {
+    const db = window.getFirebaseDb && window.getFirebaseDb();
+    if (!db) {
         return;
     }
     
     try {
-        const { error } = await supabase
-            .from('clients_data')
-            .upsert({
-                id: 'main',
-                clients: data,
-                last_updated: timestamp,
-                updated_by: localStorage.getItem("username") || "unknown"
-            }, {
-                onConflict: 'id'
-            });
+        await db.collection('clients').doc('main').set({
+            clients: data,
+            last_updated: timestamp,
+            updated_by: localStorage.getItem("username") || "unknown"
+        });
         
-        if (error) {
-            throw error;
-        }
-        
-        console.log("Data saved to Supabase successfully");
+        console.log("Data saved to Firebase successfully");
     } catch (error) {
-        console.error("Error saving to Supabase:", error);
+        console.error("Error saving to Firebase:", error);
         throw error;
     }
 }
 
-// تحميل البيانات من Supabase
-async function loadFromSupabase() {
-    const supabase = window.getSupabaseClient && window.getSupabaseClient();
-    if (!supabase) {
+// تحميل البيانات من Firebase
+async function loadFromFirebase() {
+    const db = window.getFirebaseDb && window.getFirebaseDb();
+    if (!db) {
         return null;
     }
     
     try {
-        const { data, error } = await supabase
-            .from('clients_data')
-            .select('*')
-            .eq('id', 'main')
-            .single();
+        const docRef = db.collection('clients').doc('main');
+        const doc = await docRef.get();
         
-        if (error) {
-            if (error.code === 'PGRST116') {
-                // لا توجد بيانات بعد
-                return null;
-            }
-            throw error;
+        if (!doc.exists) {
+            return null;
         }
         
+        const data = doc.data();
         if (data && data.clients && Array.isArray(data.clients)) {
-            console.log("Data loaded from Supabase");
+            console.log("Data loaded from Firebase");
             return {
                 clients: data.clients,
                 lastUpdated: data.last_updated || null
@@ -418,69 +403,58 @@ async function loadFromSupabase() {
         
         return null;
     } catch (error) {
-        console.error("Error loading from Supabase:", error);
+        console.error("Error loading from Firebase:", error);
         return null;
     }
 }
 
-// الاستماع للتحديثات التلقائية من Supabase
-function setupSupabaseSync() {
-    if (!window.isSupabaseConfigured || !window.isSupabaseConfigured()) {
+// الاستماع للتحديثات التلقائية من Firebase (Real-time)
+function setupFirebaseSync() {
+    if (!window.isFirebaseConfigured || !window.isFirebaseConfigured()) {
         return;
     }
     
-    const supabase = window.getSupabaseClient && window.getSupabaseClient();
-    if (!supabase) {
+    const db = window.getFirebaseDb && window.getFirebaseDb();
+    if (!db) {
         return;
     }
     
     try {
-        // الاستماع للتحديثات في الوقت الفعلي
-        const subscription = supabase
-            .channel('clients_data_changes')
-            .on('postgres_changes', 
-                { 
-                    event: '*', 
-                    schema: 'public', 
-                    table: 'clients_data',
-                    filter: 'id=eq.main'
-                }, 
-                (payload) => {
-                    console.log('Change received!', payload);
+        const unsubscribe = db.collection('clients').doc('main')
+            .onSnapshot((doc) => {
+                if (!doc.exists) return;
+                
+                const data = doc.data();
+                if (data && data.clients) {
+                    const remoteLastUpdate = data.last_updated;
+                    const localLastUpdate = localStorage.getItem("lastSaveTime");
                     
-                    if (payload.new && payload.new.clients) {
-                        const remoteLastUpdate = payload.new.last_updated;
-                        const localLastUpdate = localStorage.getItem("lastSaveTime");
+                    // تحديث فقط إذا كانت البيانات من Firebase أحدث
+                    if (!localLastUpdate || remoteLastUpdate > localLastUpdate) {
+                        clients = data.clients;
+                        localStorage.setItem("clients", JSON.stringify(clients));
+                        localStorage.setItem("lastSaveTime", remoteLastUpdate);
+                        localStorage.setItem("lastSyncTime", remoteLastUpdate);
                         
-                        // تحديث فقط إذا كانت البيانات من Supabase أحدث
-                        if (!localLastUpdate || remoteLastUpdate > localLastUpdate) {
-                            // تجنب الحلقة اللا نهائية - تحديث بدون إرسال لـ Supabase
-                            clients = payload.new.clients;
-                            localStorage.setItem("clients", JSON.stringify(clients));
-                            localStorage.setItem("lastSaveTime", remoteLastUpdate);
-                            localStorage.setItem("lastSyncTime", remoteLastUpdate);
-                            
-                            renderClients();
-                            updateSaveStatus();
-                            
-                            // عرض إشعار بالمزامنة
-                            if (document.hasFocus()) {
-                                showSuccess("تم تحديث البيانات من السحابة تلقائياً!");
-                            }
+                        renderClients();
+                        updateSaveStatus();
+                        
+                        if (document.hasFocus()) {
+                            showSuccess("تم تحديث البيانات من السحابة تلقائياً!");
                         }
                     }
                 }
-            )
-            .subscribe();
+            }, (error) => {
+                console.error("Firebase real-time error:", error);
+            });
         
-        console.log("Supabase real-time sync activated");
+        console.log("Firebase real-time sync activated");
         
-        // تنظيف الاشتراك عند إغلاق الصفحة
         window.addEventListener('beforeunload', () => {
-            subscription.unsubscribe();
+            if (typeof unsubscribe === 'function') unsubscribe();
         });
     } catch (error) {
-        console.error("Error setting up Supabase sync:", error);
+        console.error("Error setting up Firebase sync:", error);
     }
 }
 
@@ -1201,8 +1175,8 @@ async function init() {
         return; // لا نكمل أي شيء آخر
     }
     
-    // محاولة تحميل البيانات من Supabase أولاً
-    if (window.isSupabaseConfigured && window.isSupabaseConfigured()) {
+    // محاولة تحميل البيانات من Firebase أولاً
+    if (window.isFirebaseConfigured && window.isFirebaseConfigured()) {
         try {
             // التحقق من وجود علامة حذف حديثة (خلال آخر 10 دقائق)
             const dataClearedAt = localStorage.getItem("dataClearedAt");
@@ -1210,51 +1184,51 @@ async function init() {
             const clearedTime = dataClearedAt ? new Date(dataClearedAt) : null;
             const timeSinceClear = clearedTime ? (now - clearedTime) / (1000 * 60) : null; // بالدقائق
             
-            // إذا تم الحذف حديثاً (خلال آخر 10 دقائق)، لا نحمّل من Supabase
+            // إذا تم الحذف حديثاً (خلال آخر 10 دقائق)، لا نحمّل من Firebase
             const wasRecentlyCleared = clearedTime && timeSinceClear < 10;
             
             const localData = localStorage.getItem("clients");
             const localLastUpdate = localStorage.getItem("lastSaveTime");
             const localClients = localData ? JSON.parse(localData) : [];
             
-            const supabaseData = await loadFromSupabase();
+            const firebaseData = await loadFromFirebase();
             
-            // إذا كانت البيانات المحلية فارغة وكان هناك حذف حديث، لا تحمّل من Supabase
+            // إذا كانت البيانات المحلية فارغة وكان هناك حذف حديث، لا تحمّل من Firebase
             if (wasRecentlyCleared && (!localData || localClients.length === 0)) {
-                console.log("Data was recently cleared, skipping Supabase load");
+                console.log("Data was recently cleared, skipping Firebase load");
                 // إزالة علامة الحذف بعد مرور الوقت
                 if (timeSinceClear >= 10) {
                     localStorage.removeItem("dataClearedAt");
                 }
-            } else if (supabaseData && supabaseData.clients && supabaseData.clients.length > 0) {
-                // إذا كانت بيانات Supabase أحدث من البيانات المحلية، استخدمها
-                if (!localData || !localLastUpdate || supabaseData.lastUpdated > localLastUpdate) {
+            } else if (firebaseData && firebaseData.clients && firebaseData.clients.length > 0) {
+                // إذا كانت بيانات Firebase أحدث من البيانات المحلية، استخدمها
+                if (!localData || !localLastUpdate || firebaseData.lastUpdated > localLastUpdate) {
                     // إذا كانت البيانات المحلية فارغة حديثاً (أقل من دقيقة)، لا نستبدلها
                     const localIsEmpty = !localData || localClients.length === 0;
                     const localIsRecent = localLastUpdate && (new Date() - new Date(localLastUpdate)) / 1000 < 60;
                     
                     if (!(localIsEmpty && localIsRecent)) {
-                        clients = supabaseData.clients;
+                        clients = firebaseData.clients;
                         localStorage.setItem("clients", JSON.stringify(clients));
-                        localStorage.setItem("lastSaveTime", supabaseData.lastUpdated || new Date().toISOString());
-                        localStorage.setItem("lastSyncTime", supabaseData.lastUpdated || new Date().toISOString());
+                        localStorage.setItem("lastSaveTime", firebaseData.lastUpdated || new Date().toISOString());
+                        localStorage.setItem("lastSyncTime", firebaseData.lastUpdated || new Date().toISOString());
                         showSuccess("تم تحميل البيانات من السحابة!");
                     }
                 } else {
-                    // إذا كانت البيانات المحلية أحدث، رفعها لـ Supabase
+                    // إذا كانت البيانات المحلية أحدث، رفعها لـ Firebase
                     if (clients.length > 0 || !localData) {
                         await saveData(true);
                     }
                 }
             } else if (localData && localClients.length > 0) {
-                // إذا كانت البيانات المحلية موجودة ولكن Supabase فارغ، رفعها
+                // إذا كانت البيانات المحلية موجودة ولكن Firebase فارغ، رفعها
                 await saveData(true);
             }
             
             // إعداد المزامنة التلقائية
-            setupSupabaseSync();
+            setupFirebaseSync();
         } catch (error) {
-            console.error("Error loading from Supabase:", error);
+            console.error("Error loading from Firebase:", error);
             // المتابعة بالبيانات المحلية
         }
     }
@@ -1725,15 +1699,15 @@ async function clearAllData() {
         localStorage.setItem("dataClearedAt", deletionTime);
         localStorage.setItem("lastSaveTime", deletionTime);
         
-        // حذف البيانات من Supabase أيضاً وحفظ مصفوفة فارغة
-        if (window.isSupabaseConfigured && window.isSupabaseConfigured()) {
+        // حذف البيانات من Firebase أيضاً وحفظ مصفوفة فارغة
+        if (window.isFirebaseConfigured && window.isFirebaseConfigured()) {
             try {
-                await saveToSupabase([], deletionTime);
+                await saveToFirebase([], deletionTime);
                 localStorage.setItem("lastSyncTime", deletionTime);
-                console.log("Data cleared from Supabase");
+                console.log("Data cleared from Firebase");
             } catch (error) {
-                console.warn("Failed to clear data from Supabase:", error);
-                // نستمر حتى لو فشل Supabase
+                console.warn("Failed to clear data from Firebase:", error);
+                // نستمر حتى لو فشل Firebase
             }
         }
         
