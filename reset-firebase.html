@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>إعادة تعيين Firebase - تشغيل لمرة واحدة</title>
+</head>
+<body>
+    <h1>🔄 إعادة تعيين بيانات Firebase</h1>
+    <p>هذه الصفحة تحذف جميع البيانات من مجموعة clients في Firestore.</p>
+    <p><strong>تحذير:</strong> لا يمكن التراجع عن هذا الإجراء!</p>
+    <button id="resetBtn">حذف جميع بيانات Firebase</button>
+    <p id="status"></p>
+
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="firebase-config.js"></script>
+    <script>
+        document.getElementById('resetBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('resetBtn');
+            const status = document.getElementById('status');
+            btn.disabled = true;
+            status.textContent = 'جاري التنفيذ...';
+            try {
+                const db = window.getFirebaseDb && window.getFirebaseDb();
+                if (!db) {
+                    status.textContent = 'خطأ: Firebase غير مُعد';
+                    return;
+                }
+                await db.collection('clients').doc('main').delete();
+                status.textContent = '✅ تم حذف البيانات بنجاح! يمكنك إغلاق هذه الصفحة.';
+            } catch (error) {
+                status.textContent = '❌ خطأ: ' + (error.message || error);
+                btn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

@@ -377,7 +377,7 @@ async function saveToFirebase(data, timestamp) {
     }
 }
 
-// تحميل البيانات من Firebase
+// تحميل البيانات من Firebase (من الخادم لتجنب البيانات المخزنة مؤقتاً)
 async function loadFromFirebase() {
     const db = window.getFirebaseDb && window.getFirebaseDb();
     if (!db) {
@@ -393,20 +393,30 @@ async function loadFromFirebase() {
         }
         
         const data = doc.data();
-        if (data && data.clients && Array.isArray(data.clients)) {
-            console.log("Data loaded from Firebase");
-            return {
-                clients: data.clients,
-                lastUpdated: data.last_updated || null
-            };
+        if (!data || !data.clients || !Array.isArray(data.clients)) {
+            return null;
         }
         
-        return null;
+        let lastUpdated = data.last_updated || null;
+        if (lastUpdated && typeof lastUpdated.toDate === 'function') {
+            lastUpdated = lastUpdated.toDate().toISOString();
+        } else if (lastUpdated && typeof lastUpdated !== 'string') {
+            lastUpdated = String(lastUpdated);
+        }
+        
+        console.log("Data loaded from Firebase");
+        return {
+            clients: data.clients,
+            lastUpdated: lastUpdated
+        };
     } catch (error) {
         console.error("Error loading from Firebase:", error);
         return null;
     }
 }
+
+// إلغاء الاشتراك في مستمع Firebase (لمنع المستمعين المكررين)
+let firebaseUnsubscribe = null;
 
 // الاستماع للتحديثات التلقائية من Firebase (Real-time)
 function setupFirebaseSync() {
@@ -419,29 +429,48 @@ function setupFirebaseSync() {
         return;
     }
     
+    // إلغاء المستمع السابق إن وجد (منع التكرار)
+    if (firebaseUnsubscribe && typeof firebaseUnsubscribe === 'function') {
+        firebaseUnsubscribe();
+        firebaseUnsubscribe = null;
+    }
+    
     try {
-        const unsubscribe = db.collection('clients').doc('main')
-            .onSnapshot((doc) => {
-                if (!doc.exists) return;
+        firebaseUnsubscribe = db.collection('clients').doc('main')
+            .onSnapshot((docSnapshot) => {
+                if (!docSnapshot.exists) return;
                 
-                const data = doc.data();
-                if (data && data.clients) {
-                    const remoteLastUpdate = data.last_updated;
-                    const localLastUpdate = localStorage.getItem("lastSaveTime");
-                    
-                    // تحديث فقط إذا كانت البيانات من Firebase أحدث
-                    if (!localLastUpdate || remoteLastUpdate > localLastUpdate) {
-                        clients = data.clients;
-                        localStorage.setItem("clients", JSON.stringify(clients));
+                const data = docSnapshot.data();
+                if (!data || !data.clients) return;
+                
+                // تحويل Firestore Timestamp إلى ISO string للمقارنة
+                let remoteLastUpdate = data.last_updated;
+                if (remoteLastUpdate && typeof remoteLastUpdate.toDate === 'function') {
+                    remoteLastUpdate = remoteLastUpdate.toDate().toISOString();
+                } else if (remoteLastUpdate && typeof remoteLastUpdate !== 'string') {
+                    remoteLastUpdate = remoteLastUpdate.toString();
+                }
+                
+                const localLastUpdate = localStorage.getItem("lastSaveTime");
+                
+                // تحديث فقط إذا كانت البيانات من Firebase أحدث (أو لم نحفظ محلياً بعد)
+                const shouldUpdate = !localLastUpdate || 
+                    (remoteLastUpdate && String(remoteLastUpdate) > String(localLastUpdate));
+                
+                if (shouldUpdate) {
+                    const remoteClients = Array.isArray(data.clients) ? data.clients : [];
+                    clients = remoteClients;
+                    localStorage.setItem("clients", JSON.stringify(clients));
+                    if (remoteLastUpdate) {
                         localStorage.setItem("lastSaveTime", remoteLastUpdate);
                         localStorage.setItem("lastSyncTime", remoteLastUpdate);
-                        
-                        renderClients();
-                        updateSaveStatus();
-                        
-                        if (document.hasFocus()) {
-                            showSuccess("تم تحديث البيانات من السحابة تلقائياً!");
-                        }
+                    }
+                    
+                    renderClients();
+                    updateSaveStatus();
+                    
+                    if (document.hasFocus() && localLastUpdate) {
+                        showSuccess("تم تحديث البيانات من السحابة تلقائياً!");
                     }
                 }
             }, (error) => {
@@ -449,14 +478,18 @@ function setupFirebaseSync() {
             });
         
         console.log("Firebase real-time sync activated");
-        
-        window.addEventListener('beforeunload', () => {
-            if (typeof unsubscribe === 'function') unsubscribe();
-        });
     } catch (error) {
         console.error("Error setting up Firebase sync:", error);
     }
 }
+
+// إلغاء مستمع Firebase عند إغلاق الصفحة
+window.addEventListener('beforeunload', () => {
+    if (firebaseUnsubscribe && typeof firebaseUnsubscribe === 'function') {
+        firebaseUnsubscribe();
+        firebaseUnsubscribe = null;
+    }
+});
 
 // تنظيف النسخ الاحتياطية القديمة
 function cleanupOldBackups() {
@@ -551,10 +584,10 @@ function restoreFromBackup() {
             customConfirm(
                 `تم العثور على نسخة احتياطية بتاريخ: ${latestBackup.replace("clients_backup_", "").replace("clients_manual_backup_", "")}\nعدد العملاء: ${clientsToRestore.length}\nهل تريد استعادتها؟`,
                 "استعادة النسخة الاحتياطية"
-            ).then(confirmed => {
+            ).then(async (confirmed) => {
                 if (confirmed) {
                     clients = clientsToRestore;
-                    saveData();
+                    await saveData();
                     renderClients();
                     showSuccess("تم استعادة النسخة الاحتياطية بنجاح!");
                 }
@@ -622,7 +655,7 @@ async function addClientConfirmed(name, phone, amount) {
     phoneInput.value = "";
     amountInput.value = "";
 
-    saveData();
+    await saveData();
     renderClients();
     showSuccess("تم إضافة العميل بنجاح!");
     nameInput.focus();
@@ -740,7 +773,7 @@ async function payFull(i) {
         date: new Date().toISOString()
     });
 
-    saveData();
+    await saveData();
     renderClients();
     showSuccess(`تم سداد المبلغ الكامل: ${formatNumber(amount)} ₪`);
 }
@@ -778,7 +811,7 @@ async function installment(i) {
         date: new Date().toISOString()
     });
 
-    saveData();
+    await saveData();
     renderClients();
     showSuccess(`تم تسجيل دفعة: ${formatNumber(amount)} ₪`);
 }
@@ -804,7 +837,7 @@ async function addMore(i) {
         date: new Date().toISOString()
     });
 
-    saveData();
+    await saveData();
     renderClients();
     showSuccess(`تم إضافة دين إضافي: ${formatNumber(amount)} ₪`);
 }
@@ -827,7 +860,7 @@ async function editClient(i) {
         client.phone = newPhone.trim() || "لا يوجد";
     }
 
-    saveData();
+    await saveData();
     renderClients();
     showSuccess("تم تحديث بيانات العميل!");
 }
@@ -843,7 +876,7 @@ async function removeClient(i) {
     }
 
     clients.splice(i, 1);
-    saveData();
+    await saveData();
     renderClients();
     showSuccess("تم حذف العميل!");
 }
@@ -1170,88 +1203,83 @@ async function init() {
     
     // تحقق إضافي: إذا لم يكن مسجل دخول محلياً، لا نكمل التحميل
     if (typeof isLoggedIn === 'function' && !isLoggedIn()) {
-        // إعادة توجيه فورية لصفحة تسجيل الدخول
         window.location.href = "login.html";
-        return; // لا نكمل أي شيء آخر
+        return;
     }
     
-    // محاولة تحميل البيانات من Firebase أولاً
+    // تحميل البيانات المحلية أولاً كقيمة افتراضية
+    const localData = localStorage.getItem("clients");
+    const localLastUpdate = localStorage.getItem("lastSaveTime");
+    let localClients = [];
+    try {
+        localClients = localData ? JSON.parse(localData) : [];
+    } catch (e) {
+        console.error("Error parsing local data:", e);
+    }
+    
+    // مزامنة Firebase إن كان مُعداً
     if (window.isFirebaseConfigured && window.isFirebaseConfigured()) {
         try {
-            // التحقق من وجود علامة حذف حديثة (خلال آخر 10 دقائق)
             const dataClearedAt = localStorage.getItem("dataClearedAt");
             const now = new Date();
             const clearedTime = dataClearedAt ? new Date(dataClearedAt) : null;
-            const timeSinceClear = clearedTime ? (now - clearedTime) / (1000 * 60) : null; // بالدقائق
-            
-            // إذا تم الحذف حديثاً (خلال آخر 10 دقائق)، لا نحمّل من Firebase
+            const timeSinceClear = clearedTime ? (now - clearedTime) / (1000 * 60) : null;
             const wasRecentlyCleared = clearedTime && timeSinceClear < 10;
             
-            const localData = localStorage.getItem("clients");
-            const localLastUpdate = localStorage.getItem("lastSaveTime");
-            const localClients = localData ? JSON.parse(localData) : [];
-            
-            const firebaseData = await loadFromFirebase();
-            
-            // إذا كانت البيانات المحلية فارغة وكان هناك حذف حديث، لا تحمّل من Firebase
-            if (wasRecentlyCleared && (!localData || localClients.length === 0)) {
+            // إذا تم الحذف حديثاً والبيانات المحلية فارغة، لا نحمل من Firebase
+            if (wasRecentlyCleared && localClients.length === 0) {
                 console.log("Data was recently cleared, skipping Firebase load");
-                // إزالة علامة الحذف بعد مرور الوقت
-                if (timeSinceClear >= 10) {
-                    localStorage.removeItem("dataClearedAt");
-                }
-            } else if (firebaseData && firebaseData.clients && firebaseData.clients.length > 0) {
-                // إذا كانت بيانات Firebase أحدث من البيانات المحلية، استخدمها
-                if (!localData || !localLastUpdate || firebaseData.lastUpdated > localLastUpdate) {
-                    // إذا كانت البيانات المحلية فارغة حديثاً (أقل من دقيقة)، لا نستبدلها
-                    const localIsEmpty = !localData || localClients.length === 0;
-                    const localIsRecent = localLastUpdate && (new Date() - new Date(localLastUpdate)) / 1000 < 60;
+            } else {
+                const firebaseData = await loadFromFirebase();
+                
+                if (firebaseData && Array.isArray(firebaseData.clients)) {
+                    const fbLast = firebaseData.lastUpdated || "";
+                    const useFirebase = firebaseData.clients.length > 0 && 
+                        (!localLastUpdate || !fbLast || String(fbLast) >= String(localLastUpdate));
                     
-                    if (!(localIsEmpty && localIsRecent)) {
-                        clients = firebaseData.clients;
-                        localStorage.setItem("clients", JSON.stringify(clients));
-                        localStorage.setItem("lastSaveTime", firebaseData.lastUpdated || new Date().toISOString());
-                        localStorage.setItem("lastSyncTime", firebaseData.lastUpdated || new Date().toISOString());
-                        showSuccess("تم تحميل البيانات من السحابة!");
+                    if (useFirebase) {
+                        const localIsEmpty = localClients.length === 0;
+                        const localIsRecent = localLastUpdate && 
+                            (new Date() - new Date(localLastUpdate)) / 1000 < 60;
+                        
+                        if (!(localIsEmpty && localIsRecent)) {
+                            clients = firebaseData.clients;
+                            if (firebaseData.lastUpdated) {
+                                localStorage.setItem("clients", JSON.stringify(clients));
+                                localStorage.setItem("lastSaveTime", firebaseData.lastUpdated);
+                                localStorage.setItem("lastSyncTime", firebaseData.lastUpdated);
+                            }
+                            showSuccess("تم تحميل البيانات من السحابة!");
+                        }
+                    } else if (localClients.length > 0 && (!firebaseData.clients.length || String(localLastUpdate) > String(fbLast))) {
+                        // المحلي أحدث: رفع لـ Firebase (skipSync=false)
+                        clients = localClients;
+                        await saveData(false);
                     }
-                } else {
-                    // إذا كانت البيانات المحلية أحدث، رفعها لـ Firebase
-                    if (clients.length > 0 || !localData) {
-                        await saveData(true);
-                    }
+                } else if (localClients.length > 0) {
+                    // Firebase فارغ والبيانات المحلية موجودة: رفعها
+                    clients = localClients;
+                    await saveData(false);
                 }
-            } else if (localData && localClients.length > 0) {
-                // إذا كانت البيانات المحلية موجودة ولكن Firebase فارغ، رفعها
-                await saveData(true);
             }
             
-            // إعداد المزامنة التلقائية
             setupFirebaseSync();
         } catch (error) {
             console.error("Error loading from Firebase:", error);
-            // المتابعة بالبيانات المحلية
+            clients = localClients.length > 0 ? localClients : clients;
         }
+    } else {
+        clients = localClients.length > 0 ? localClients : clients;
     }
     
-    // تحميل البيانات من localStorage كنسخة احتياطية
-    if (clients.length === 0) {
-        const localData = localStorage.getItem("clients");
-        if (localData) {
-            try {
-                clients = JSON.parse(localData);
-            } catch (e) {
-                console.error("Error parsing local data:", e);
-                clients = [];
-            }
-        }
+    // إذا لم نحصل على بيانات من أي مصدر
+    if (clients.length === 0 && localClients.length > 0) {
+        clients = localClients;
     }
     
-    // تحديث الفهرس عند التحميل وإصلاح البيانات
+    // إصلاح البيانات (معرفات، قيم افتراضية)
     clients = clients.map((client, index) => {
-        if (!client.id) {
-            client.id = Date.now() + index;
-        }
-        // إصلاح القيم المفقودة
+        if (!client.id) client.id = Date.now() + index;
         if (typeof client.total !== 'number') client.total = 0;
         if (typeof client.remaining !== 'number') client.remaining = client.total || 0;
         if (!Array.isArray(client.history)) client.history = [];
@@ -1260,16 +1288,15 @@ async function init() {
         return client;
     });
     
-    // حفظ البيانات بعد الإصلاح
+    // حفظ البيانات المُصلحة (بما فيها Firebase) - شرط التحديث يمنع الحلقة
     if (clients.length > 0) {
-        await saveData(true); // حفظ بدون Firebase لتجنب الحلقة
+        await saveData(false);
     }
     
     renderClients();
     updateSaveStatus();
     nameInput.focus();
     
-    // تحديث مؤشر الحفظ كل 5 ثواني
     setInterval(updateSaveStatus, 5000);
 }
 
@@ -1334,12 +1361,12 @@ function importData() {
                 customConfirm(
                     `تم العثور على ${dataToImport.length} عميل.\nهل تريد استيرادهم؟ (سيتم استبدال البيانات الحالية)`,
                     "تأكيد الاستيراد"
-                ).then(confirmed => {
+                ).then(async (confirmed) => {
                     if (confirmed) {
                         clients = dataToImport;
                         // إزالة علامة الحذف الكامل عند استيراد البيانات
                         localStorage.removeItem("dataClearedAt");
-                        saveData();
+                        await saveData();
                         renderClients();
                         showSuccess(`تم استيراد ${dataToImport.length} عميل بنجاح!`);
                     }
@@ -1673,6 +1700,43 @@ function printClientsReport() {
     showSuccess("تم تحضير الكشف للطباعة!");
 }
 
+// إعادة تعيين بيانات Firebase فقط (استخدام لمرة واحدة)
+async function resetFirebaseData() {
+    if (!window.isFirebaseConfigured || !window.isFirebaseConfigured()) {
+        console.warn("Firebase is not configured");
+        return false;
+    }
+    const db = window.getFirebaseDb && window.getFirebaseDb();
+    if (!db) return false;
+    try {
+        await db.collection('clients').doc('main').delete();
+        console.log("Firebase clients document deleted successfully");
+        localStorage.removeItem("lastSyncTime");
+        return true;
+    } catch (error) {
+        console.error("Error resetting Firebase data:", error);
+        throw error;
+    }
+}
+
+// تأكيد إعادة تعيين Firebase (للزر في الواجهة)
+async function resetFirebaseDataConfirm() {
+    const confirmed = await customConfirm(
+        "⚠️ سيتم حذف جميع بيانات السحابة (Firebase) فقط.\nالبيانات المحلية ستبقى.\nهل أنت متأكد؟",
+        "إعادة تعيين Firebase"
+    );
+    if (!confirmed) return;
+    try {
+        await resetFirebaseData();
+        showSuccess("تم إعادة تعيين بيانات Firebase بنجاح!");
+    } catch (error) {
+        showError("فشل إعادة تعيين Firebase!");
+    }
+}
+
+// جعل الدوال متاحة عالمياً للاستخدام من Console
+window.resetFirebaseData = resetFirebaseData;
+
 // حذف جميع البيانات
 async function clearAllData() {
     const confirmed = await customConfirm(
@@ -1716,32 +1780,31 @@ async function clearAllData() {
     }
 }
 
-// حفظ تلقائي قبل إغلاق الصفحة
+// حفظ تلقائي قبل إغلاق الصفحة (ملاحظة: قبلunload لا ينتظر الـ await - الحفظ الفعلي يحدث فوراً قدر الإمكان)
 window.addEventListener("beforeunload", (e) => {
     try {
-        saveData();
+        saveData(); // لا await - المتصفح قد يغلق قبل اكتماله
     } catch (error) {
         console.error("Error saving before unload:", error);
     }
 });
 
 // حفظ تلقائي كل 30 ثانية
-setInterval(() => {
+setInterval(async () => {
     if (clients.length > 0) {
         try {
-            saveData();
+            await saveData();
         } catch (error) {
             console.error("Auto-save error:", error);
         }
     }
 }, 30000); // 30 ثانية
 
-
 // حفظ تلقائي عند إخفاء الصفحة
-document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
+document.addEventListener("visibilitychange", async () => {
+    if (document.hidden && clients.length > 0) {
         try {
-            saveData();
+            await saveData();
         } catch (error) {
             console.error("Error saving on visibility change:", error);
         }
